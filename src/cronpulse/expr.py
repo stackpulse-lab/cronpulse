@@ -17,6 +17,7 @@ from typing import Dict, FrozenSet, Iterable, List, Optional, Tuple
 
 __all__ = [
     "CronError",
+    "UnsupportedQuartzError",
     "CronExpr",
     "ScanResult",
     "parse",
@@ -66,6 +67,14 @@ class CronError(ValueError):
     """Raised when a cron expression cannot be parsed."""
 
 
+class UnsupportedQuartzError(CronError):
+    """Raised for Quartz-only syntax that classic five-field cron cannot express.
+
+    The message names the offending token so users can tell "typo" apart from
+    "wrong dialect" without reading the parser source.
+    """
+
+
 @dataclass(frozen=True)
 class _Field:
     name: str
@@ -80,6 +89,46 @@ _HOUR = _Field("hour", 0, 23, {})
 _DOM = _Field("day-of-month", 1, 31, {})
 _MONTH = _Field("month", 1, 12, MONTH_NAMES)
 _DOW = _Field("day-of-week", 0, 7, DOW_NAMES, allow_seven_as_zero=True)
+
+# Quartz-only tokens.  Pattern order matters only for the message wording;
+# every pattern is anchored to a single list element so ``jul`` in the month
+# field can never be mistaken for a ``L`` extension.
+_QUARTZ_DOM = (
+    (re.compile(r"(?i)^l$"), "`L` (last day of month)"),
+    (re.compile(r"(?i)^lw$"), "`LW` (last weekday of month)"),
+    (re.compile(r"(?i)^l-\d{1,2}$"), "`L-n` (n days before month end)"),
+    (re.compile(r"(?i)^\d{1,2}w$"), "`nW` (nearest weekday to day n)"),
+)
+_QUARTZ_DOW = (
+    (
+        re.compile(r"(?i)^(?:\d|sun|mon|tue|wed|thu|fri|sat)l$"),
+        "`nL` (last weekday n of month)",
+    ),
+    (
+        re.compile(r"(?i)^(?:[a-z]{3}|\d)#[1-5]$"),
+        "`n#k` (k-th weekday n of month)",
+    ),
+)
+
+
+def _reject_quartz(text: str, field: _Field) -> None:
+    """Reject Quartz extensions with an actionable message.
+
+    Classic cron has no ``L``/``W``/``#``; silently narrowing or ignoring them
+    would produce a schedule the user never asked for, so parsing fails with
+    the reason spelled out.
+    """
+    patterns = _QUARTZ_DOM if field is _DOM else _QUARTZ_DOW
+    for item in text.split(","):
+        base = item.split("/")[0].strip()
+        for pattern, label in patterns:
+            if pattern.match(base):
+                raise UnsupportedQuartzError(
+                    f"{field.name}: Quartz extension {label} in {item!r} is not "
+                    "supported; cronpulse implements the classic 5-field Vixie cron "
+                    "dialect. Write out the concrete dates, or keep this rule in a "
+                    "Quartz-based scheduler."
+                )
 
 
 def _parse_value(token: str, field: _Field) -> int:
@@ -357,8 +406,10 @@ def parse(expression: str) -> CronExpr:
 
     minute, _ = _parse_field(fields[0], _MINUTE)
     hour, _ = _parse_field(fields[1], _HOUR)
+    _reject_quartz(fields[2], _DOM)
     dom, dom_restricted = _parse_field(fields[2], _DOM)
     month, _ = _parse_field(fields[3], _MONTH)
+    _reject_quartz(fields[4], _DOW)
     dow, dow_restricted = _parse_field(fields[4], _DOW)
 
     return CronExpr(

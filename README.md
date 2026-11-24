@@ -128,8 +128,23 @@ system timezone (Vixie cron additionally honours a per-crontab
 | Weekday names | `sun` … `sat` | case insensitive |
 | Sunday | `0` or `7` | normalised to `0` |
 | Macros | `@hourly` `@daily` `@weekly` `@monthly` `@yearly` | `@annually`, `@midnight` aliases |
+| Quartz `L` `W` `#` | `0 0 L * *`, `0 0 15W * *`, `0 0 * * MON#2` | **rejected** with an explicit dialect error (see below) |
 
 Fields: `minute hour day-of-month month day-of-week` (5 fields).
+
+Quartz extensions (`L`, `LW`, `L-3`, `15W`, `6L`, `MON#2`) have no classic
+cron equivalent, so CronPulse refuses them instead of guessing:
+
+```console
+$ cronpulse check "0 0 L * *"
+cronpulse: invalid expression: day-of-month: Quartz extension `L` (last day
+of month) in 'L' is not supported; cronpulse implements the classic 5-field
+Vixie cron dialect. Write out the concrete dates, or keep this rule in a
+Quartz-based scheduler.
+```
+
+Exit code is `2`, the same as any other invalid expression, so scripts can
+gate on it.
 
 ### Semantics worth knowing
 
@@ -170,7 +185,8 @@ disk, deterministic output.
 
 - [x] v0.1 — five-field parser, next-run preview, never-fires detection, CLI
 - [x] v0.2 — DST-aware preview (gap/overlap notes) + `CRON_TZ` hint in `explain`
-- [ ] v0.3 — Quartz `L`/`W` warnings, scheduled-drift report from systemd/crontab inventory
+- [x] v0.3 — explicit Quartz `L`/`W`/`#` rejection with dialect guidance
+- [ ] v0.4 — scheduled-drift report from systemd/crontab inventory
 
 ## License
 
@@ -218,9 +234,13 @@ cronpulse explain "0 9 1 * 1-5"
 月份/星期英文缩写、周日 `0` 或 `7`，以及 `@hourly` `@daily` `@weekly`
 `@monthly` `@yearly` 等宏。
 
+Quartz 专有写法（`L`、`LW`、`L-3`、`15W`、`6L`、`MON#2`）在经典 cron 中
+没有等价语义，因此**直接报错并说明原因**，退出码 `2`，不会静默忽略或近似：
+
 行为说明：
 
 - 日与星期同时受限时按经典 cron 的**或**语义匹配；
+- Quartz `L`/`W`/`#` 会得到明确错误提示（含字段名、含义与替代建议）；
 - `next` 严格取 `--after` 之后的时间，不会回显当前这一分钟；
 - `--tz` 同时作用于输入与输出；省略时使用主机本地时区；
 - 永不触发检测扫描 8 年，覆盖完整闰年周期（`0 0 29 2 *` 下次为 2028-02-29）。
