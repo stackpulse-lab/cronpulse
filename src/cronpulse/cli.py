@@ -17,6 +17,7 @@ from .manifest import (
     load_expectations,
     parse_crontab,
 )
+from .oncalendar import CalendarError, parse_calendar
 
 try:  # Python >= 3.9
     from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
@@ -85,6 +86,18 @@ def _build_parser() -> argparse.ArgumentParser:
         help="crontab has a user column (/etc/crontab, /etc/cron.d)",
     )
     p_drift.add_argument("--json", action="store_true", help="machine-readable output")
+
+    p_calendar = sub.add_parser(
+        "calendar", help="preview a systemd OnCalendar= timer schedule"
+    )
+    p_calendar.add_argument(
+        "spec", help="OnCalendar= value, e.g. 'Mon..Fri 09:00' or 'weekly'"
+    )
+    p_calendar.add_argument(
+        "-n", "--count", type=int, default=5, help="how many runs (default: 5)"
+    )
+    _add_time_options(p_calendar)
+    p_calendar.add_argument("--json", action="store_true", help="machine-readable output")
 
     return parser
 
@@ -280,12 +293,69 @@ def _cmd_drift(args: argparse.Namespace) -> int:
     return EXIT_DRIFT if report.has_issues else EXIT_OK
 
 
+def _cmd_calendar(args: argparse.Namespace, after: datetime) -> int:
+    spec = parse_calendar(args.spec)
+    result = spec.scan(after, count=args.count, horizon_years=HORIZON_YEARS)
+    runs = result.runs
+    never = not runs
+
+    if args.json:
+        payload = {
+            "spec": spec.expression,
+            "normalized": spec.normalized,
+            "after": after.isoformat(),
+            "runs": _isoformat(runs),
+            "never_fires": never,
+            "horizon_years": HORIZON_YEARS,
+            "dst": _dst_payload(result),
+        }
+        print(json.dumps(payload, ensure_ascii=False))
+        return EXIT_NEVER if never else EXIT_OK
+
+    if never:
+        print(
+            f"{spec.expression}: NEVER fires within {HORIZON_YEARS} years",
+            file=sys.stderr,
+        )
+        return EXIT_NEVER
+    print(f"{spec.expression}  ->  {spec.normalized}  (after {after.isoformat()})")
+    for index, run in enumerate(runs, 1):
+        print(f"{index:>2}. {run.isoformat(sep=' ')}")
+    if result.skipped:
+        print(
+            "note: skipped {0} wall-clock time(s) that do not exist (DST gap): {1}".format(
+                len(result.skipped),
+                ", ".join(dt.isoformat(sep=" ") for dt in result.skipped),
+            )
+        )
+    if result.ambiguous:
+        print(
+            "note: {0} wall-clock time(s) occur twice (DST overlap), first instant listed: {1}".format(
+                len(result.ambiguous),
+                ", ".join(dt.isoformat(sep=" ") for dt in result.ambiguous),
+            )
+        )
+    return EXIT_OK
+
+
 def main(argv: Optional[Sequence[str]] = None) -> int:
     parser = _build_parser()
     args = parser.parse_args(argv)
     if not args.command:
         parser.print_help()
         return EXIT_OK
+
+    if args.command == "calendar":
+        try:
+            tz = _resolve_tz(args.tz)
+            after = _resolve_after(args.after, tz)
+            return _cmd_calendar(args, after)
+        except CalendarError as exc:
+            print(f"cronpulse: invalid OnCalendar expression: {exc}", file=sys.stderr)
+            return EXIT_INVALID
+        except CronError as exc:
+            print(f"cronpulse: {exc}", file=sys.stderr)
+            return EXIT_INVALID
 
     if args.command == "drift":
         try:

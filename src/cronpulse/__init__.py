@@ -3,7 +3,7 @@
 Zero dependencies, standard library only.
 """
 
-__version__ = "0.4.0"
+__version__ = "0.5.0"
 
 from .expr import CronError, CronExpr, ScanResult, UnsupportedQuartzError, parse  # noqa: F401
 from .manifest import (  # noqa: F401
@@ -14,6 +14,11 @@ from .manifest import (  # noqa: F401
     load_expectations,
     parse_crontab,
 )
+from .oncalendar import (  # noqa: F401
+    CalendarError,
+    CalendarSpec,
+    parse_calendar,
+)
 
 __all__ = [
     "CronError",
@@ -23,9 +28,12 @@ __all__ = [
     "DriftReport",
     "ManifestEntry",
     "ManifestError",
+    "CalendarError",
+    "CalendarSpec",
     "compare_manifests",
     "load_expectations",
     "parse_crontab",
+    "parse_calendar",
     "parse",
     "__version__",
 ]

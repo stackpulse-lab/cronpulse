@@ -131,6 +131,39 @@ Use it as a deploy gate:
 crontab -l | cronpulse drift - --expect ops/expectations.json || exit 1
 ```
 
+### Preview systemd `OnCalendar=` timers
+
+systemd timers do not read cron: components are AND-ed, the weekday comes
+first, and ranges use `..`. CronPulse previews the same specification:
+
+```console
+$ cronpulse calendar "Mon..Fri 09:00" -n 2 --after 2026-11-25T06:00
+Mon..Fri 09:00  ->  Mon..Fri *-*-* 09:00:00  (after 2026-11-25T06:00:00+08:00)
+ 1. 2026-11-25 09:00:00+08:00
+ 2. 2026-11-26 09:00:00+08:00
+
+$ cronpulse calendar quarterly -n 2 --after 2026-11-25T00:00
+quarterly  ->  *-01,04,07,10-01 00:00:00  (after 2026-11-25T00:00:00)
+ 1. 2027-01-01 00:00:00
+ 2. 2027-04-01 00:00:00
+```
+
+- Shortcuts: `minutely` `hourly` `daily` `midnight` `weekly` `monthly`
+  `quarterly` `semi-annually` `yearly` `annually`.
+- Optional weekday prefix: `Mon`, `Mon..Fri`, `Sat,Sun` (full names work).
+- Date `[YYYY-]MM-DD` and time `HH:MM[:SS]`; each component accepts `*`,
+  `N`, `N..M`, `N/M`, `N..M/M` and comma lists. Month names are accepted.
+- The normalised form is printed next to your input, so `weekly` shows that
+  it becomes `Mon *-*-* 00:00:00`; `--json` exposes it as `normalized`.
+- Weekday and day-of-month are **AND-ed**, unlike classic cron's OR rule.
+- Exit code `3` when the specification cannot fire inside 8 years, e.g.
+  `*-02-30 00:00` (February never has 30 days).
+- Rejected with an explicit reason: the `~` last-day marker, the `?`
+  wildcard, fractional seconds and trailing `UTC` / timezone suffixes
+  (use `--tz`).
+- DST follows the same policy as cron previews: nonexistent wall-clock times
+  are skipped and noted, repeated times are listed once.
+
 ### DST boundaries
 
 Schedules are wall-clock based, so a timezone's DST transition can make a
@@ -217,6 +250,7 @@ Layout:
 
 ```
 src/cronpulse/expr.py     parser + CronExpr + next-run math
+src/cronpulse/oncalendar.py systemd OnCalendar= parser + preview
 src/cronpulse/manifest.py crontab manifest parsing + drift report
 src/cronpulse/cli.py      argparse CLI
 tests/                    parser, schedule, manifest and CLI tests
@@ -231,7 +265,8 @@ disk, deterministic output.
 - [x] v0.2 — DST-aware preview (gap/overlap notes) + `CRON_TZ` hint in `explain`
 - [x] v0.3 — explicit Quartz `L`/`W`/`#` rejection with dialect guidance
 - [x] v0.4 — crontab manifest drift check (semantic comparison, exit code 4)
-- [ ] v0.5 — systemd timer inventory (`OnCalendar`) support
+- [x] v0.5 — systemd `OnCalendar=` preview (shortcuts, weekday prefix, steps, DST notes)
+- [ ] v0.6 — systemd timer inventory drift check (`OnCalendar=` manifests)
 
 ## License
 
@@ -320,6 +355,31 @@ Quartz 专有写法（`L`、`LW`、`L-3`、`15W`、`6L`、`MON#2`）在经典 cr
 - `next` 严格取 `--after` 之后的时间，不会回显当前这一分钟；
 - `--tz` 同时作用于输入与输出；省略时使用主机本地时区；
 - 永不触发检测扫描 8 年，覆盖完整闰年周期（`0 0 29 2 *` 下次为 2028-02-29）。
+
+### 预览 systemd `OnCalendar=` 定时器
+
+systemd timer 不读 cron：各组件是**与**关系，星期写在最前，范围用 `..`。
+CronPulse 直接预览 systemd 使用的同一份表达式：
+
+```console
+$ cronpulse calendar "Mon..Fri 09:00" -n 2 --after 2026-11-25T06:00
+Mon..Fri 09:00  ->  Mon..Fri *-*-* 09:00:00  (after 2026-11-25T06:00:00+08:00)
+ 1. 2026-11-25 09:00:00+08:00
+ 2. 2026-11-26 09:00:00+08:00
+```
+
+- 快捷写法：`minutely` `hourly` `daily` `midnight` `weekly` `monthly`
+  `quarterly` `semi-annually` `yearly` `annually`。
+- 可选星期前缀：`Mon`、`Mon..Fri`、`Sat,Sun`，支持英文全称。
+- 日期 `[YYYY-]MM-DD`、时间 `HH:MM[:SS]`；每个组件支持 `*`、`N`、
+  `N..M`、`N/M`、`N..M/M` 与逗号列表，月份可用英文名。
+- 输出会同时打印归一化结果（如 `weekly` 展开为 `Mon *-*-* 00:00:00`），
+  `--json` 中为 `normalized`。
+- 星期与「日」是**与**关系，不同于经典 cron 的**或**语义。
+- 8 年内不会触发时退出码 `3`，例如 `*-02-30 00:00`（2 月没有 30 号）。
+- `~`（当月最后一天）、`?`、小数秒与末尾 `UTC` 时区后缀都会明确报错，
+  时区请用 `--tz`。
+- DST 处理与 cron 预览一致：不存在的挂钟时间跳过并提示，重复的时刻只列一次。
 
 ### 夏令时（DST）边界
 
