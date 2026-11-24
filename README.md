@@ -88,6 +88,49 @@ fields     : minute=0; hour=9; day-of-month=1; month=*; day-of-week=1,2,3,4,5
 note       : day-of-month and day-of-week are OR-ed (classic cron)
 ```
 
+### Check crontab drift
+
+Declare the jobs you expect in a JSON manifest and compare it with the live
+crontab:
+
+```console
+$ cat expectations.json
+{
+  "entries": [
+    {"schedule": "@daily", "command": "/usr/local/bin/backup.sh --full"},
+    {"schedule": "*/5 * * * *", "command": "/usr/local/bin/poll.sh"},
+    {"schedule": "0 3 * * *", "command": "/usr/local/bin/report.sh"}
+  ]
+}
+
+$ cronpulse drift /tmp/crontab --expect expectations.json
+actual: 3 entries; expected: 3; matched: 1
+unexpected (1):
+  0 4 * * *  /usr/local/bin/oneoff.sh
+changed (1):
+  /usr/local/bin/backup.sh --full: 0 0 * * * -> 0 9 * * 1-5
+```
+
+- `--system` reads the user column used by `/etc/crontab` and `/etc/cron.d/*`;
+  the user is part of the identity, so the same command under a different
+  account is reported as missing + unexpected.
+- `-` reads the crontab from standard input:
+  `crontab -l | cronpulse drift - --expect expectations.json`.
+- Schedules are compared semantically: `@daily` equals `0 0 * * *` and `1-5`
+  equals `1,2,3,4,5`. Command whitespace is normalised; comments, blank lines
+  and `NAME=value` environment lines are ignored.
+- A command that exists on both sides with a different schedule is reported
+  once as `changed`, not as one missing plus one unexpected entry.
+- Duplicate entries and schedules that never fire are printed as warnings.
+- Exit codes: `0` in sync, `4` drift or warnings, `2` unreadable or invalid
+  input.
+
+Use it as a deploy gate:
+
+```console
+crontab -l | cronpulse drift - --expect ops/expectations.json || exit 1
+```
+
 ### DST boundaries
 
 Schedules are wall-clock based, so a timezone's DST transition can make a
@@ -174,8 +217,9 @@ Layout:
 
 ```
 src/cronpulse/expr.py     parser + CronExpr + next-run math
+src/cronpulse/manifest.py crontab manifest parsing + drift report
 src/cronpulse/cli.py      argparse CLI
-tests/                    parser, schedule and CLI tests
+tests/                    parser, schedule, manifest and CLI tests
 ```
 
 Design constraints: standard library only, no network access, no state on
@@ -186,7 +230,8 @@ disk, deterministic output.
 - [x] v0.1 — five-field parser, next-run preview, never-fires detection, CLI
 - [x] v0.2 — DST-aware preview (gap/overlap notes) + `CRON_TZ` hint in `explain`
 - [x] v0.3 — explicit Quartz `L`/`W`/`#` rejection with dialect guidance
-- [ ] v0.4 — scheduled-drift report from systemd/crontab inventory
+- [x] v0.4 — crontab manifest drift check (semantic comparison, exit code 4)
+- [ ] v0.5 — systemd timer inventory (`OnCalendar`) support
 
 ## License
 
@@ -224,9 +269,40 @@ cronpulse next "*/15 9-18 * * 1-5" -n 5
 cronpulse next "@daily" --tz Asia/Shanghai --after 2026-12-31T23:00
 cronpulse check "0 0 31 4 *" --json
 cronpulse explain "0 9 1 * 1-5"
+cronpulse drift /etc/crontab --system --expect expectations.json
 ```
 
-退出码：`0` 正常；`2` 表达式或参数非法；`3` 8 年窗口内不会触发。
+退出码：`0` 正常；`2` 表达式或参数非法；`3` 8 年窗口内不会触发；
+`4` crontab 清单存在漂移或告警。
+
+### 检查 crontab 漂移
+
+把「应该存在的任务」写成 JSON 清单（顶层数组，或含 `entries` 数组的对象），
+与线上 crontab 对比：
+
+```console
+$ cronpulse drift /tmp/crontab --expect expectations.json
+actual: 3 entries; expected: 3; matched: 1
+unexpected (1):
+  0 4 * * *  /usr/local/bin/oneoff.sh
+changed (1):
+  /usr/local/bin/backup.sh --full: 0 0 * * * -> 0 9 * * 1-5
+```
+
+- `--system` 用于 `/etc/crontab`、`/etc/cron.d/*` 这类带用户列的清单；用户是
+  任务身份的一部分，同一命令换了账号会同时报「缺失」与「多余」。
+- 位置参数写 `-` 表示从标准输入读取：`crontab -l | cronpulse drift - --expect expectations.json`。
+- 计划按语义比较：`@daily` 等同 `0 0 * * *`，`1-5` 等同 `1,2,3,4,5`；
+  命令中的多余空白会被归一化；注释、空行与 `NAME=value` 环境行忽略。
+- 同一命令的计划变化只报一条 `changed`，不会拆成「缺失 + 多余」。
+- 重复条目与永不触发的计划会以 `warning:` 输出。
+- 退出码：`0` 一致；`4` 存在漂移或告警；`2` 文件不可读或格式非法。
+
+可直接作为部署门禁：
+
+```console
+crontab -l | cronpulse drift - --expect ops/expectations.json || exit 1
+```
 
 ## 支持的语法
 

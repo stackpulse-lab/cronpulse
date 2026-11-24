@@ -10,6 +10,13 @@ from typing import List, Optional, Sequence
 
 from . import __version__
 from .expr import CronError, parse
+from .manifest import (
+    DriftReport,
+    ManifestError,
+    compare_manifests,
+    load_expectations,
+    parse_crontab,
+)
 
 try:  # Python >= 3.9
     from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
@@ -21,6 +28,7 @@ HORIZON_YEARS = 8
 EXIT_OK = 0
 EXIT_INVALID = 2
 EXIT_NEVER = 3
+EXIT_DRIFT = 4
 
 
 def _add_time_options(parser: argparse.ArgumentParser) -> None:
@@ -58,6 +66,25 @@ def _build_parser() -> argparse.ArgumentParser:
     p_explain = sub.add_parser("explain", help="show how each field was parsed")
     p_explain.add_argument("expression", help="cron expression")
     p_explain.add_argument("--json", action="store_true", help="machine-readable output")
+
+    p_drift = sub.add_parser(
+        "drift", help="compare a crontab with an expected manifest"
+    )
+    p_drift.add_argument(
+        "crontab", help="crontab file to inspect, or - to read standard input"
+    )
+    p_drift.add_argument(
+        "--expect",
+        required=True,
+        metavar="FILE",
+        help="JSON manifest of expected entries",
+    )
+    p_drift.add_argument(
+        "--system",
+        action="store_true",
+        help="crontab has a user column (/etc/crontab, /etc/cron.d)",
+    )
+    p_drift.add_argument("--json", action="store_true", help="machine-readable output")
 
     return parser
 
@@ -193,12 +220,79 @@ def _cmd_explain(args: argparse.Namespace, expr) -> int:
     return EXIT_OK
 
 
+def _read_crontab(path: str) -> str:
+    if path == "-":
+        return sys.stdin.read()
+    try:
+        with open(path, "r", encoding="utf-8") as handle:
+            return handle.read()
+    except OSError as exc:
+        raise ManifestError(f"{path}: cannot read crontab: {exc}") from None
+
+
+def _print_entry(entry) -> None:
+    user = f"  user={entry.user}" if entry.user is not None else ""
+    print(f"  {entry.schedule}  {entry.command}{user}")
+
+
+def _cmd_drift(args: argparse.Namespace) -> int:
+    text = _read_crontab(args.crontab)
+    source = "<stdin>" if args.crontab == "-" else args.crontab
+    actual = parse_crontab(text, system=args.system, source=source)
+    expected = load_expectations(args.expect)
+    report: DriftReport = compare_manifests(expected, actual)
+
+    if args.json:
+        payload = report.as_dict()
+        payload["crontab"] = source
+        print(json.dumps(payload, ensure_ascii=False))
+        return EXIT_DRIFT if report.has_issues else EXIT_OK
+
+    print(
+        f"actual: {report.actual_count} entries; expected: {report.expected_count}; "
+        f"matched: {report.matched}"
+    )
+    if report.missing:
+        print(f"missing ({len(report.missing)}):")
+        for entry in report.missing:
+            _print_entry(entry)
+    if report.unexpected:
+        print(f"unexpected ({len(report.unexpected)}):")
+        for entry in report.unexpected:
+            _print_entry(entry)
+    if report.changed:
+        print(f"changed ({len(report.changed)}):")
+        for change in report.changed:
+            print(
+                f"  {change.actual.command}: {change.expected.schedule} -> "
+                f"{change.actual.schedule}"
+            )
+    if report.duplicates:
+        print(f"warning: duplicate entries ({len(report.duplicates)}):")
+        for entry in report.duplicates:
+            _print_entry(entry)
+    if report.never_fires:
+        print(f"warning: schedules that never fire ({len(report.never_fires)}):")
+        for entry in report.never_fires:
+            _print_entry(entry)
+    if not report.has_issues:
+        print("no drift: crontab matches the expected manifest")
+    return EXIT_DRIFT if report.has_issues else EXIT_OK
+
+
 def main(argv: Optional[Sequence[str]] = None) -> int:
     parser = _build_parser()
     args = parser.parse_args(argv)
     if not args.command:
         parser.print_help()
         return EXIT_OK
+
+    if args.command == "drift":
+        try:
+            return _cmd_drift(args)
+        except ManifestError as exc:
+            print(f"cronpulse: {exc}", file=sys.stderr)
+            return EXIT_INVALID
 
     try:
         expr = parse(args.expression)
