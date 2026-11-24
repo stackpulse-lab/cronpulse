@@ -11,13 +11,14 @@ The parser is strict: anything it cannot represent unambiguously is a
 from __future__ import annotations
 
 import re
-from dataclasses import dataclass
-from datetime import date, datetime, timedelta
+from dataclasses import dataclass, field
+from datetime import date, datetime, timedelta, timezone
 from typing import Dict, FrozenSet, Iterable, List, Optional, Tuple
 
 __all__ = [
     "CronError",
     "CronExpr",
+    "ScanResult",
     "parse",
     "MONTH_NAMES",
     "DOW_NAMES",
@@ -157,6 +158,50 @@ def _parse_field(text: str, field: _Field) -> Tuple[FrozenSet[int], bool]:
 
 
 @dataclass(frozen=True)
+class ScanResult:
+    """Outcome of a forward scan.
+
+    ``runs`` holds real instants in chronological order.  ``skipped`` and
+    ``ambiguous`` hold **naive wall-clock** times that the timezone could not
+    represent as-is: times inside a DST gap (skipped) or times that happen
+    twice during a DST overlap (ambiguous, both instants are listed in
+    ``runs``).
+    """
+
+    runs: List[datetime] = field(default_factory=list)
+    skipped: List[datetime] = field(default_factory=list)
+    ambiguous: List[datetime] = field(default_factory=list)
+
+
+def _wall_instants(wall: datetime, tz) -> Tuple[List[datetime], str]:
+    """Map a local wall-clock time to the real instants it denotes.
+
+    Returns ``(instants, kind)`` where ``kind`` is ``"exact"`` (one instant),
+    ``"ambiguous"`` (two instants, DST overlap) or ``"nonexistent"`` (no
+    instant, DST gap).
+    """
+    if tz is None:
+        return [wall], "exact"
+
+    instants: List[datetime] = []
+    for fold in (0, 1):
+        candidate = wall.replace(tzinfo=tz, fold=fold)
+        back = candidate.astimezone(timezone.utc).astimezone(tz)
+        if back.replace(tzinfo=None) != wall:
+            continue  # imaginary time: the offset mapping lands elsewhere
+        instant = candidate.astimezone(timezone.utc)
+        if all(instant != existing.astimezone(timezone.utc) for existing in instants):
+            instants.append(candidate)
+
+    if not instants:
+        return [], "nonexistent"
+    if len(instants) > 1:
+        instants.sort(key=lambda dt: dt.astimezone(timezone.utc))
+        return instants, "ambiguous"
+    return instants, "exact"
+
+
+@dataclass(frozen=True)
 class CronExpr:
     """A parsed five-field cron expression."""
 
@@ -200,6 +245,63 @@ class CronExpr:
         return dom_ok if self.dom_restricted else dow_ok
 
     # -- schedule ----------------------------------------------------
+    def scan(
+        self,
+        after: Optional[datetime] = None,
+        count: int = 1,
+        horizon_years: int = 8,
+    ) -> ScanResult:
+        """Collect up to ``count`` runs strictly after ``after``.
+
+        Aware input is interpreted as local wall-clock time in its own
+        timezone: times inside a DST gap are skipped, times inside a DST
+        overlap are returned twice (``fold=0`` first).
+        """
+        if count <= 0:
+            raise ValueError("count must be positive")
+        if horizon_years <= 0:
+            raise ValueError("horizon_years must be positive")
+
+        after = after or datetime.now()
+        tz = after.tzinfo
+        after_wall = after.replace(tzinfo=None) if tz is not None else after
+        start_day = after.date()
+        runs: List[datetime] = []
+        skipped: List[datetime] = []
+        ambiguous: List[datetime] = []
+        max_days = horizon_years * 366 + 1
+
+        for offset in range(max_days):
+            day = start_day + timedelta(days=offset)
+            if not self.matches_day(day):
+                continue
+            day_runs: List[datetime] = []
+            for hour in sorted(self.hour):
+                for minute in sorted(self.minute):
+                    wall = datetime(day.year, day.month, day.day, hour, minute)
+                    instants, kind = _wall_instants(wall, tz)
+                    if not instants:
+                        if wall > after_wall:
+                            skipped.append(wall)
+                        continue
+                    if kind == "ambiguous" and any(instant > after for instant in instants):
+                        ambiguous.append(wall)
+                    day_runs.extend(instant for instant in instants if instant > after)
+            if not day_runs:
+                continue
+            # Sorting keeps runs chronological even when a DST overlap makes a
+            # later wall-clock time happen before an earlier one (fold=1).
+            if tz is not None:
+                day_runs.sort(key=lambda dt: dt.astimezone(timezone.utc))
+            else:
+                day_runs.sort()
+            for instant in day_runs:
+                runs.append(instant)
+                if len(runs) >= count:
+                    return ScanResult(runs, skipped, ambiguous)
+
+        return ScanResult(runs, skipped, ambiguous)
+
     def next_runs(
         self,
         after: Optional[datetime] = None,
@@ -208,41 +310,11 @@ class CronExpr:
     ) -> List[datetime]:
         """Return up to ``count`` strictly-after-``after`` occurrences.
 
-        Naive input yields naive output; aware input preserves the tzinfo.
+        Naive input yields naive output; aware input preserves the tzinfo and
+        is DST-aware (gaps skipped, overlaps returned twice).
         An empty list means "does not fire within the horizon".
         """
-        if count <= 0:
-            raise ValueError("count must be positive")
-        if horizon_years <= 0:
-            raise ValueError("horizon_years must be positive")
-
-        after = after or datetime.now()
-        allowed_after = after
-        start_day = after.date()
-        results: List[datetime] = []
-        minutes = sorted(self.minute)
-        hours = sorted(self.hour)
-        max_days = horizon_years * 366 + 1
-
-        for offset in range(max_days):
-            day = start_day + timedelta(days=offset)
-            if not self.matches_day(day):
-                continue
-            for hour in hours:
-                for minute in minutes:
-                    candidate = datetime(
-                        day.year,
-                        day.month,
-                        day.day,
-                        hour,
-                        minute,
-                        tzinfo=after.tzinfo,
-                    )
-                    if candidate > allowed_after:
-                        results.append(candidate)
-                        if len(results) >= count:
-                            return results
-        return results
+        return self.scan(after, count=count, horizon_years=horizon_years).runs
 
     def never_fires(
         self,

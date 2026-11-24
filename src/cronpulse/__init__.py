@@ -3,8 +3,8 @@
 Zero dependencies, standard library only.
 """
 
-__version__ = "0.1.0"
+__version__ = "0.2.0"
 
-from .expr import CronError, CronExpr, parse  # noqa: F401
+from .expr import CronError, CronExpr, ScanResult, parse  # noqa: F401
 
-__all__ = ["CronError", "CronExpr", "parse", "__version__"]
+__all__ = ["CronError", "CronExpr", "ScanResult", "parse", "__version__"]

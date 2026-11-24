@@ -88,6 +88,33 @@ fields     : minute=0; hour=9; day-of-month=1; month=*; day-of-week=1,2,3,4,5
 note       : day-of-month and day-of-week are OR-ed (classic cron)
 ```
 
+### DST boundaries
+
+Schedules are wall-clock based, so a timezone's DST transition can make a
+run vanish or happen twice. CronPulse maps every wall-clock time to real
+instants and tells you what happened:
+
+```console
+$ cronpulse next "30 2 * * *" --tz America/New_York --after 2026-03-07T12:00 -n 2
+30 2 * * *  (after 2026-03-07T12:00:00-05:00)
+ 1. 2026-03-09 02:30:00-04:00
+ 2. 2026-03-10 02:30:00-04:00
+note: skipped 1 wall-clock time(s) that do not exist (DST gap): 2026-03-08 02:30:00
+```
+
+- **Gap (spring forward).** Times that do not exist are skipped, and reported
+  as `note: skipped …`; `--json` exposes them under `dst.skipped`.
+- **Overlap (fall back).** Times that happen twice are listed twice with their
+  real offsets, and reported under `dst.ambiguous`. Both instants are
+  chronological, so a `*/30 1 * * *` schedule prints 01:00-04:00, 01:30-04:00,
+  01:00-05:00, 01:30-05:00.
+- **Naive input is unchanged.** Without a timezone CronPulse keeps the old
+  wall-clock behaviour, which is what plain crontab entries assume.
+
+`cronpulse explain` also prints a short `CRON_TZ` hint: cron daemons run in the
+system timezone (Vixie cron additionally honours a per-crontab
+`CRON_TZ=<IANA zone>` line), and systemd timers ignore `CRON_TZ` entirely.
+
 ## Supported syntax
 
 | Feature | Example | Notes |
@@ -113,6 +140,9 @@ Fields: `minute hour day-of-month month day-of-week` (5 fields).
   `--after`, so passing the timestamp of a run never echoes that run back.
 - **Timezone.** `--tz Asia/Shanghai` applies to `--after` and output. Without
   it, the host's local timezone is used and printed with its offset.
+- **DST-aware preview.** With a DST timezone, times inside a spring-forward
+  gap are skipped and reported; times inside a fall-back overlap are returned
+  twice with their distinct offsets. `--json` exposes both under `dst`.
 - **Never-fires horizon.** Detection scans 8 years, which covers a full
   leap-year cycle (e.g. `0 0 29 2 *` is correctly reported as firing next on
   2028-02-29).
@@ -139,8 +169,8 @@ disk, deterministic output.
 ## Roadmap
 
 - [x] v0.1 — five-field parser, next-run preview, never-fires detection, CLI
-- [ ] v0.2 — cron dialect hints (`CRON_TZ`, Quartz `L`/`W` warnings)
-- [ ] v0.3 — scheduled-drift report from systemd/crontab inventory
+- [x] v0.2 — DST-aware preview (gap/overlap notes) + `CRON_TZ` hint in `explain`
+- [ ] v0.3 — Quartz `L`/`W` warnings, scheduled-drift report from systemd/crontab inventory
 
 ## License
 
@@ -194,6 +224,29 @@ cronpulse explain "0 9 1 * 1-5"
 - `next` 严格取 `--after` 之后的时间，不会回显当前这一分钟；
 - `--tz` 同时作用于输入与输出；省略时使用主机本地时区；
 - 永不触发检测扫描 8 年，覆盖完整闰年周期（`0 0 29 2 *` 下次为 2028-02-29）。
+
+### 夏令时（DST）边界
+
+cron 按本地挂钟时间匹配，时区切换会让某些任务**消失**或**执行两次**。
+CronPulse 会把每个挂钟时间映射成真实时刻并明确提示：
+
+```console
+$ cronpulse next "30 2 * * *" --tz America/New_York --after 2026-03-07T12:00 -n 2
+30 2 * * *  (after 2026-03-07T12:00:00-05:00)
+ 1. 2026-03-09 02:30:00-04:00
+ 2. 2026-03-10 02:30:00-04:00
+note: skipped 1 wall-clock time(s) that do not exist (DST gap): 2026-03-08 02:30:00
+```
+
+- **春季跳过**：不存在的时刻直接跳过并提示，`--json` 中位于 `dst.skipped`。
+- **秋季重叠**：出现两次的时刻会带真实偏移各列一次，位于 `dst.ambiguous`，
+  且严格按真实时间排序（`*/30 1 * * *` 会输出 01:00-04:00、01:30-04:00、
+  01:00-05:00、01:30-05:00）。
+- **无时区输入行为不变**：与朴素的 crontab 挂钟语义一致，便于对照。
+
+`cronpulse explain` 还会给出 `CRON_TZ` 提示：cron 守护进程使用系统时区
+（Vixie cron 支持在 crontab 顶部写 `CRON_TZ=<IANA 时区>`），systemd timer
+则不认 `CRON_TZ`。
 
 ## 开发
 

@@ -92,12 +92,41 @@ def _isoformat(values: Sequence[datetime]) -> List[str]:
     return [dt.isoformat() for dt in values]
 
 
+def _dst_payload(result) -> dict:
+    return {
+        "skipped": [dt.isoformat(sep=" ") for dt in result.skipped],
+        "ambiguous": [dt.isoformat(sep=" ") for dt in result.ambiguous],
+    }
+
+
+def _print_dst_notes(result) -> None:
+    if result.skipped:
+        print(
+            "note: skipped {0} wall-clock time(s) that do not exist (DST gap): {1}".format(
+                len(result.skipped), ", ".join(dt.isoformat(sep=" ") for dt in result.skipped)
+            )
+        )
+    if result.ambiguous:
+        print(
+            "note: {0} wall-clock time(s) occur twice (DST overlap), both listed: {1}".format(
+                len(result.ambiguous), ", ".join(dt.isoformat(sep=" ") for dt in result.ambiguous)
+            )
+        )
+
+
 def _cmd_next(args: argparse.Namespace, expr) -> int:
     tz = _resolve_tz(args.tz)
     after = _resolve_after(args.after, tz)
-    runs = expr.next_runs(after, count=args.count, horizon_years=HORIZON_YEARS)
+    result = expr.scan(after, count=args.count, horizon_years=HORIZON_YEARS)
+    runs = result.runs
     if args.json:
-        print(json.dumps({"expression": expr.expression, "after": after.isoformat(), "runs": _isoformat(runs)}, ensure_ascii=False))
+        payload = {
+            "expression": expr.expression,
+            "after": after.isoformat(),
+            "runs": _isoformat(runs),
+            "dst": _dst_payload(result),
+        }
+        print(json.dumps(payload, ensure_ascii=False))
         return EXIT_OK
     if not runs:
         print(f"{expr.expression}: never fires within {HORIZON_YEARS} years", file=sys.stderr)
@@ -105,13 +134,15 @@ def _cmd_next(args: argparse.Namespace, expr) -> int:
     print(f"{expr.expression}  (after {after.isoformat()})")
     for index, run in enumerate(runs, 1):
         print(f"{index:>2}. {run.isoformat(sep=' ')}")
+    _print_dst_notes(result)
     return EXIT_OK
 
 
 def _cmd_check(args: argparse.Namespace, expr) -> int:
     tz = _resolve_tz(args.tz)
     after = _resolve_after(args.after, tz)
-    runs = expr.next_runs(after, count=3, horizon_years=HORIZON_YEARS)
+    result = expr.scan(after, count=3, horizon_years=HORIZON_YEARS)
+    runs = result.runs
     never = not runs
     if args.json:
         payload = {
@@ -120,6 +151,7 @@ def _cmd_check(args: argparse.Namespace, expr) -> int:
             "never_fires": never,
             "horizon_years": HORIZON_YEARS,
             "preview": _isoformat(runs),
+            "dst": _dst_payload(result),
         }
         print(json.dumps(payload, ensure_ascii=False))
     elif never:
@@ -128,10 +160,16 @@ def _cmd_check(args: argparse.Namespace, expr) -> int:
         print(f"{expr.expression}: fires next at {runs[0].isoformat(sep=' ')}")
         for run in runs[1:]:
             print(f"  then {run.isoformat(sep=' ')}")
+        _print_dst_notes(result)
     return EXIT_NEVER if never else EXIT_OK
 
 
 def _cmd_explain(args: argparse.Namespace, expr) -> int:
+    hint = (
+        "cron daemons run in the system timezone; classic Vixie cron also honours "
+        "a per-crontab CRON_TZ=<IANA zone> line, systemd timers ignore CRON_TZ "
+        "(use OnCalendar with its own DST rules). Preview another zone with --tz."
+    )
     if args.json:
         print(
             json.dumps(
@@ -141,6 +179,7 @@ def _cmd_explain(args: argparse.Namespace, expr) -> int:
                     "day_of_month_and_day_of_week": (
                         "or" if expr.dom_restricted and expr.dow_restricted else "standard"
                     ),
+                    "timezone_hint": hint,
                 },
                 ensure_ascii=False,
             )
@@ -150,6 +189,7 @@ def _cmd_explain(args: argparse.Namespace, expr) -> int:
     print(f"fields     : {expr.describe()}")
     if expr.dom_restricted and expr.dow_restricted:
         print("note       : day-of-month and day-of-week are OR-ed (classic cron)")
+    print(f"hint       : {hint}")
     return EXIT_OK
 
 
