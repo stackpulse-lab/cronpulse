@@ -18,6 +18,13 @@ from .manifest import (
     parse_crontab,
 )
 from .oncalendar import CalendarError, parse_calendar
+from .timers import (
+    TimerDriftReport,
+    TimerError,
+    compare_timers,
+    load_timer_expectations,
+    load_timer_units,
+)
 
 try:  # Python >= 3.9
     from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
@@ -98,6 +105,29 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     _add_time_options(p_calendar)
     p_calendar.add_argument("--json", action="store_true", help="machine-readable output")
+
+    p_timer_drift = sub.add_parser(
+        "timer-drift",
+        help="compare systemd timer units with an expected manifest",
+    )
+    p_timer_drift.add_argument(
+        "paths",
+        nargs="+",
+        metavar="PATH",
+        help="timer unit files or directories (non-recursive *.timer)",
+    )
+    p_timer_drift.add_argument(
+        "--expect",
+        required=True,
+        metavar="FILE",
+        help="JSON manifest of expected timers",
+    )
+    p_timer_drift.add_argument(
+        "--allow-relative",
+        action="store_true",
+        help="skip OnBootSec=/OnUnitActiveSec= timers instead of failing",
+    )
+    p_timer_drift.add_argument("--json", action="store_true", help="machine-readable output")
 
     return parser
 
@@ -338,6 +368,61 @@ def _cmd_calendar(args: argparse.Namespace, after: datetime) -> int:
     return EXIT_OK
 
 
+def _print_timer_entry(entry) -> None:
+    service = f"  service={entry.service}" if entry.service is not None else ""
+    print(f"  {entry.name}  {entry.calendar}{service}")
+
+
+def _cmd_timer_drift(args: argparse.Namespace) -> int:
+    actual = load_timer_units(args.paths, allow_relative=args.allow_relative)
+    expected = load_timer_expectations(args.expect)
+    report: TimerDriftReport = compare_timers(expected, actual)
+
+    if args.json:
+        payload = report.as_dict()
+        payload["paths"] = list(args.paths)
+        print(json.dumps(payload, ensure_ascii=False))
+        return EXIT_DRIFT if report.has_issues else EXIT_OK
+
+    print(
+        f"actual: {report.actual_count} timer calendars; "
+        f"expected: {report.expected_count}; matched: {report.matched}"
+    )
+    if report.missing:
+        print(f"missing ({len(report.missing)}):")
+        for entry in report.missing:
+            _print_timer_entry(entry)
+    if report.unexpected:
+        print(f"unexpected ({len(report.unexpected)}):")
+        for entry in report.unexpected:
+            _print_timer_entry(entry)
+    if report.changed:
+        print(f"changed ({len(report.changed)}):")
+        for change in report.changed:
+            detail = (
+                f"{change.expected.calendar} -> {change.actual.calendar}"
+                if change.expected.calendar != change.actual.calendar
+                else "calendar unchanged"
+            )
+            if change.expected.service != change.actual.service:
+                detail += (
+                    f" (service {change.expected.service or '-'} -> "
+                    f"{change.actual.service or '-'})"
+                )
+            print(f"  {change.actual.name}: {detail}")
+    if report.duplicates:
+        print(f"warning: duplicate OnCalendar= entries ({len(report.duplicates)}):")
+        for entry in report.duplicates:
+            _print_timer_entry(entry)
+    if report.never_fires:
+        print(f"warning: timers that never fire ({len(report.never_fires)}):")
+        for entry in report.never_fires:
+            _print_timer_entry(entry)
+    if not report.has_issues:
+        print("no drift: timer units match the expected manifest")
+    return EXIT_DRIFT if report.has_issues else EXIT_OK
+
+
 def main(argv: Optional[Sequence[str]] = None) -> int:
     parser = _build_parser()
     args = parser.parse_args(argv)
@@ -361,6 +446,13 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         try:
             return _cmd_drift(args)
         except ManifestError as exc:
+            print(f"cronpulse: {exc}", file=sys.stderr)
+            return EXIT_INVALID
+
+    if args.command == "timer-drift":
+        try:
+            return _cmd_timer_drift(args)
+        except TimerError as exc:
             print(f"cronpulse: {exc}", file=sys.stderr)
             return EXIT_INVALID
 

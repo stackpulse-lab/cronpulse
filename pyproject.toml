@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "cronpulse"
 dynamic = ["version"]
-description = "Zero-dependency cron and systemd OnCalendar explainer, run preview and never-fires detector"
+description = "Zero-dependency cron and systemd timer explainer, run preview, never-fires and drift checks"
 readme = "README.md"
 requires-python = ">=3.9"
 license = { text = "MIT" }

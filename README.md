@@ -164,6 +164,47 @@ quarterly  ->  *-01,04,07,10-01 00:00:00  (after 2026-11-25T00:00:00)
 - DST follows the same policy as cron previews: nonexistent wall-clock times
   are skipped and noted, repeated times are listed once.
 
+### Check systemd timer drift
+
+Keep a JSON inventory of the timer calendars a host should have and compare it
+with the unit files on disk:
+
+```console
+$ cat timers.json
+{
+  "timers": [
+    {"name": "backup.timer", "calendar": "daily", "service": "backup.service"},
+    {"name": "report.timer", "calendars": ["Mon..Fri 09:00", "Fri 18:00"]}
+  ]
+}
+
+$ cronpulse timer-drift /etc/systemd/system --expect timers.json
+actual: 2 timer calendars; expected: 3; matched: 1
+missing (1):
+  report.timer  Fri 18:00  service=report.service
+changed (1):
+  backup.timer: daily -> Mon 09:00 (service backup.service -> backup-test.service)
+```
+
+- `PATH` accepts unit files and directories (non-recursive `*.timer` scan) and
+  can be repeated. Drop-ins in `*.timer.d/` are not merged; point the command at
+  the concrete files if your setup relies on overrides.
+- Matching is semantic, not textual: `weekly` equals `Mon *-*-* 00:00:00`,
+  `Mon..Fri` equals `Mon,Tue,Wed,Thu,Fri`, and month names equal numbers.
+  `Unit=` is part of a timer's identity, so retargeting a timer is reported as
+  `changed` instead of missing plus unexpected.
+- Repeated identical `OnCalendar=` lines are warned about; a calendar that
+  cannot fire inside 8 years (for example `*-02-30 00:00`) is warned about too.
+- Relative timers (`OnBootSec=`, `OnStartupSec=`, `OnUnitActiveSec=`,
+  `OnUnitInactiveSec=`) have no fixed calendar and are rejected with their line
+  number. Pass `--allow-relative` to skip them explicitly.
+- Exit codes: `0` in sync, `4` drift or warnings, `2` unreadable or invalid
+  input. `--json` reports the same data as `drift`.
+
+```console
+cronpulse timer-drift /etc/systemd/system --expect ops/timers.json || exit 1
+```
+
 ### DST boundaries
 
 Schedules are wall-clock based, so a timezone's DST transition can make a
@@ -252,8 +293,9 @@ Layout:
 src/cronpulse/expr.py     parser + CronExpr + next-run math
 src/cronpulse/oncalendar.py systemd OnCalendar= parser + preview
 src/cronpulse/manifest.py crontab manifest parsing + drift report
+src/cronpulse/timers.py   systemd timer unit parsing + calendar drift report
 src/cronpulse/cli.py      argparse CLI
-tests/                    parser, schedule, manifest and CLI tests
+tests/                    parser, schedule, manifest, timer and CLI tests
 ```
 
 Design constraints: standard library only, no network access, no state on
@@ -266,7 +308,7 @@ disk, deterministic output.
 - [x] v0.3 — explicit Quartz `L`/`W`/`#` rejection with dialect guidance
 - [x] v0.4 — crontab manifest drift check (semantic comparison, exit code 4)
 - [x] v0.5 — systemd `OnCalendar=` preview (shortcuts, weekday prefix, steps, DST notes)
-- [ ] v0.6 — systemd timer inventory drift check (`OnCalendar=` manifests)
+- [x] v0.6 — systemd timer inventory drift check (`OnCalendar=` manifests)
 
 ## License
 
@@ -305,6 +347,7 @@ cronpulse next "@daily" --tz Asia/Shanghai --after 2026-12-31T23:00
 cronpulse check "0 0 31 4 *" --json
 cronpulse explain "0 9 1 * 1-5"
 cronpulse drift /etc/crontab --system --expect expectations.json
+cronpulse timer-drift /etc/systemd/system --expect timers.json
 ```
 
 退出码：`0` 正常；`2` 表达式或参数非法；`3` 8 年窗口内不会触发；
@@ -380,6 +423,44 @@ Mon..Fri 09:00  ->  Mon..Fri *-*-* 09:00:00  (after 2026-11-25T06:00:00+08:00)
 - `~`（当月最后一天）、`?`、小数秒与末尾 `UTC` 时区后缀都会明确报错，
   时区请用 `--tz`。
 - DST 处理与 cron 预览一致：不存在的挂钟时间跳过并提示，重复的时刻只列一次。
+
+### 检查 systemd timer 清单漂移
+
+把「主机上应该存在的 timer 日历」写成 JSON 清单，与磁盘上的 unit 文件对比：
+
+```console
+$ cat timers.json
+{
+  "timers": [
+    {"name": "backup.timer", "calendar": "daily", "service": "backup.service"},
+    {"name": "report.timer", "calendars": ["Mon..Fri 09:00", "Fri 18:00"]}
+  ]
+}
+
+$ cronpulse timer-drift /etc/systemd/system --expect timers.json
+actual: 2 timer calendars; expected: 3; matched: 1
+missing (1):
+  report.timer  Fri 18:00  service=report.service
+changed (1):
+  backup.timer: daily -> Mon 09:00 (service backup.service -> backup-test.service)
+```
+
+- `PATH` 可以是 unit 文件或目录（目录只扫描一层 `*.timer`），也可传多个路径。
+  `*.timer.d/` 里的 drop-in 不会合并；依赖覆盖文件时请直接指定具体文件。
+- 按语义比较而非文本：`weekly` 等同 `Mon *-*-* 00:00:00`，`Mon..Fri` 等同
+  `Mon,Tue,Wed,Thu,Fri`，月份名等同数字；`Unit=` 属于身份的一部分，换目标
+  服务只报一条 `changed`，不会拆成缺失 + 多余。
+- 同一 timer 重复写相同的 `OnCalendar=`，以及 8 年内不可能触发的日历
+  （如 `*-02-30 00:00`）都会以 `warning:` 输出。
+- 相对定时器（`OnBootSec=`、`OnStartupSec=`、`OnUnitActiveSec=`、
+  `OnUnitInactiveSec=`）没有固定日历，默认带行号报错；传 `--allow-relative`
+  可显式跳过。
+- 退出码：`0` 一致；`4` 存在漂移或告警；`2` 文件不可读或格式非法。
+  `--json` 输出与 `drift` 同构的数据。
+
+```console
+cronpulse timer-drift /etc/systemd/system --expect ops/timers.json || exit 1
+```
 
 ### 夏令时（DST）边界
 
