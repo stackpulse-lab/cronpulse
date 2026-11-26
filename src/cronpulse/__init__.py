@@ -3,7 +3,7 @@
 Zero dependencies, standard library only.
 """
 
-__version__ = "0.6.0"
+__version__ = "0.6.1"
 
 from .expr import CronError, CronExpr, ScanResult, UnsupportedQuartzError, parse  # noqa: F401
 from .manifest import (  # noqa: F401

@@ -3,7 +3,7 @@ requires = ["setuptools>=68"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "cronpulse"
+name = "cronpulse-cli"
 dynamic = ["version"]
 description = "Zero-dependency cron and systemd timer explainer, run preview, never-fires and drift checks"
 readme = "README.md"
