@@ -3,6 +3,8 @@
 **Read your cron schedule before your cron schedule reads you.**
 
 [![CI](https://github.com/stackpulse-lab/cronpulse/actions/workflows/ci.yml/badge.svg)](https://github.com/stackpulse-lab/cronpulse/actions/workflows/ci.yml)
+[![PyPI](https://img.shields.io/pypi/v/cronpulse-cli?logo=pypi&logoColor=white)](https://pypi.org/project/cronpulse-cli/)
+[![Python 3.9+](https://img.shields.io/badge/python-3.9%2B-blue?logo=python&logoColor=white)](https://www.python.org/)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
 CronPulse is a zero-dependency command line tool that explains cron
@@ -36,7 +38,16 @@ timestamps in your timezone, and fail CI when a schedule cannot run.
 
 ## Install
 
-Python 3.9+ and nothing else. From a checkout:
+Python 3.9+ and nothing else. From PyPI (v0.6.1+):
+
+```console
+pip install cronpulse-cli
+cronpulse --version
+```
+
+The distribution name is `cronpulse-cli`; the command it installs is `cronpulse`.
+
+From a checkout:
 
 ```console
 python -m pip install .
@@ -232,6 +243,9 @@ note: skipped 1 wall-clock time(s) that do not exist (DST gap): 2026-03-08 02:30
 system timezone (Vixie cron additionally honours a per-crontab
 `CRON_TZ=<IANA zone>` line), and systemd timers ignore `CRON_TZ` entirely.
 
+Field notes and reproducible ops write-ups from the same lab live in the
+[StackPulse Lab articles index](https://github.com/stackpulse-lab/stackpulse-lab/tree/main/articles).
+
 ## Supported syntax
 
 | Feature | Example | Notes |
@@ -327,6 +341,15 @@ CronPulse 是一个零依赖命令行工具，用来看懂 cron 表达式、预�
 $ cronpulse check "0 0 30 2 *"
 0 0 30 2 *: NEVER fires within 8 years
 ```
+
+## 安装
+
+```console
+pip install cronpulse-cli    # PyPI（v0.6.1+）；发行包名 cronpulse-cli，命令名 cronpulse
+cronpulse --version
+```
+
+从源码安装：`python -m pip install .`；不安装直接运行：`PYTHONPATH=src python -m cronpulse ...`。
 
 ## 为什么需要
 
@@ -484,6 +507,9 @@ note: skipped 1 wall-clock time(s) that do not exist (DST gap): 2026-03-08 02:30
 `cronpulse explain` 还会给出 `CRON_TZ` 提示：cron 守护进程使用系统时区
 （Vixie cron 支持在 crontab 顶部写 `CRON_TZ=<IANA 时区>`），systemd timer
 则不认 `CRON_TZ`。
+
+同实验室的实战文章与可复现运维记录见
+[StackPulse Lab 文章索引](https://github.com/stackpulse-lab/stackpulse-lab/tree/main/articles)。
 
 ## 开发
 
