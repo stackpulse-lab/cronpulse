@@ -245,6 +245,9 @@ system timezone (Vixie cron additionally honours a per-crontab
 
 Field notes and reproducible ops write-ups from the same lab live in the
 [StackPulse Lab articles index](https://github.com/stackpulse-lab/stackpulse-lab/tree/main/articles).
+For a worked example that combines both features on one incident, read
+[When the schedule did not run: DST gaps and systemd timer drift](https://github.com/stackpulse-lab/stackpulse-lab/blob/main/articles/cronpulse-dst-timer-drift.en.md)
+(DST gap/overlap previews, `timer-drift` missing/changed/warnings, real exit codes).
 
 ## Supported syntax
 
@@ -510,6 +513,9 @@ note: skipped 1 wall-clock time(s) that do not exist (DST gap): 2026-03-08 02:30
 
 同实验室的实战文章与可复现运维记录见
 [StackPulse Lab 文章索引](https://github.com/stackpulse-lab/stackpulse-lab/tree/main/articles)。
+把 DST 预览与 timer 清单漂移放在同一次事故里复盘的完整记录：
+[定时任务没跑：DST 缺 02:30 与 systemd timer 清单漂移排查实录](https://github.com/stackpulse-lab/stackpulse-lab/blob/main/articles/cronpulse-dst-timer-drift.zh.md)
+（含 gap/overlap 真实偏移、missing/changed/告警输出与全部退出码）。
 
 ## 开发
 
